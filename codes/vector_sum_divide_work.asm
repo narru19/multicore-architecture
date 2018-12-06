@@ -6,7 +6,8 @@ li r4, 4
 li r5, 0x10000
 li r6, 0x20000
 
-tsl r7, 0(r6)
+stw r0, 0(r6)
+pid r7
 beq r7, r1, wait
 
 init:
@@ -14,13 +15,18 @@ stw r0, 0(r5)
 add r5, r2, r5
 add r3, r1, r3
 bne r3, r4, init
-stw r0, 0(r6)
+stw r1, 0(r6)
 jmp pids
 
 wait:
-tsl r7, 0(r6)
 nop
-beq r7, r1, wait
+nop
+nop
+nop
+nop
+nop
+ldw r7, 0(r6)
+beq r7, r0, wait
 
 
 pids:

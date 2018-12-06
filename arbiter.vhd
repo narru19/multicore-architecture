@@ -38,28 +38,37 @@ ARCHITECTURE structure OF arbiter IS
 		BEGIN
 		IF rising_edge(clk) THEN
 			IF cur_state = IDLE THEN
-				IF (req_llc = '1') THEN																-- If the LLC has to fake a request, do that you eh?
+				-- If the LLC has to fake a request, give priority to it
+				IF (req_llc = '1') THEN
 					cur_state <= REQLLC;
-				ELSIF (req_one_i = '1' OR req_one_d = '1') AND				-- Both pentiuns want to work (either their instruction or data caches)
-						(req_two_i = '1' OR req_two_d = '1') THEN
-					IF old_state = TWOWORKED OR old_state = NONE THEN		-- 'two' or nobody (priority to 'one') worked before
+				
+				-- Both pentiuns want to work (either their instruction or data caches)
+				ELSIF (req_one_i = '1' OR req_one_d = '1') AND (req_two_i = '1' OR req_two_d = '1') THEN
+					-- 'two' or nobody (priority to 'one') worked before
+					IF old_state = TWOWORKED OR old_state = NONE THEN
+						-- Priority to data cache requests
 						IF req_one_d = '1' THEN
-							cur_state <= REQONE_D;													-- Priority to data cache requests
+							cur_state <= REQONE_D;
 							old_state <= ONEWORKED;
 						ELSIF req_one_i = '1' THEN
 							cur_state <= REQONE_I;
 							old_state <= ONEWORKED;
 						END IF;
-					ELSIF old_state = ONEWORKED THEN										-- 'one' worked before   
+					
+					-- 'one' worked before  
+					ELSIF old_state = ONEWORKED THEN 
+						-- Priority to data cache requests
 						IF req_two_d = '1' THEN
-							cur_state <= REQTWO_D;													-- Priority to data cache requests
+							cur_state <= REQTWO_D;
 							old_state <= TWOWORKED;
 						ELSIF req_two_i = '1' THEN
 							cur_state <= REQTWO_I;
 							old_state <= TWOWORKED;
 						END IF;
 					END IF;
-				ELSIF (req_one_i = '1' OR  req_one_d = '1') AND				-- Only 'one' wants to work
+				
+				-- Only 'one' wants to work
+				ELSIF (req_one_i = '1' OR  req_one_d = '1') AND
 							(req_two_i = '0' AND req_two_d = '0') THEN 
 					IF req_one_d = '1' THEN
 						cur_state <= REQONE_D;
@@ -68,8 +77,9 @@ ARCHITECTURE structure OF arbiter IS
 						cur_state <= REQONE_I;
 						old_state <= ONEWORKED;
 					END IF;
-				ELSIF (req_two_i = '1' OR  req_two_d = '1') AND				-- Only 'two' wants to work
-							(req_one_i = '0' AND req_one_d = '0') THEN 
+				
+				-- Only 'two' wants to work
+				ELSIF (req_two_i = '1' OR  req_two_d = '1') AND (req_one_i = '0' AND req_one_d = '0') THEN 
 					IF req_two_d = '1' THEN
 						cur_state <= REQTWO_D;
 						old_state <= TWOWORKED;
@@ -78,36 +88,42 @@ ARCHITECTURE structure OF arbiter IS
 						old_state <= TWOWORKED;
 					END IF;
 				END IF;
+			
 			ELSIF cur_state = REQONE_I THEN
 				IF llc_done = '1' THEN
 					cur_state <= IDLE;
 				ELSIF req_one_i = '0' THEN
 					cur_state <= WAITING_LLC;
 				END IF;
+			
 			ELSIF cur_state = REQONE_D THEN
 				IF llc_done = '1' THEN
 					cur_state <= IDLE;
 				ELSIF req_one_d = '0' THEN
 					cur_state <= WAITING_LLC;
 				END IF;
+			
 			ELSIF cur_state = REQTWO_I THEN
 				IF llc_done = '1' THEN
 					cur_state <= IDLE;
 				ELSIF req_two_i = '0' THEN
 					cur_state <= WAITING_LLC;
 				END IF;
+			
 			ELSIF cur_state = REQTWO_D THEN
 				IF llc_done = '1' THEN
 					cur_state <= IDLE;
 				ELSIF req_two_d = '0' THEN
 					cur_state <= WAITING_LLC;
 				END IF;
+			
 			ELSIF cur_state = REQLLC THEN
 				IF llc_done = '1' THEN
 					cur_state <= IDLE;
 				ELSIF req_llc = '0' THEN
 					cur_state <= WAITING_LLC;
 				END IF;
+			
 			ELSIF cur_state = WAITING_LLC THEN
 				IF llc_done = '1' THEN
 					cur_state <= IDLE;
@@ -116,10 +132,10 @@ ARCHITECTURE structure OF arbiter IS
 		END IF;
 	END PROCESS p;
 	
-	ack_one_i <=	'1' WHEN cur_state = REQONE_I AND req_one_i = '1' ELSE '0';
-	ack_one_d <=	'1' WHEN cur_state = REQONE_D AND req_one_d = '1' ELSE '0';
-	ack_two_i <=	'1' WHEN cur_state = REQTWO_I AND req_two_i = '1' ELSE '0';
-	ack_two_d <=	'1' WHEN cur_state = REQTWO_D AND req_two_d = '1' ELSE '0';
-	ack_llc   <=	'1' WHEN cur_state = REQLLC   AND req_llc   = '1' ELSE '0';
+	ack_one_i <= '1' WHEN cur_state = REQONE_I AND req_one_i = '1' ELSE '0';
+	ack_one_d <= '1' WHEN cur_state = REQONE_D AND req_one_d = '1' ELSE '0';
+	ack_two_i <= '1' WHEN cur_state = REQTWO_I AND req_two_i = '1' ELSE '0';
+	ack_two_d <= '1' WHEN cur_state = REQTWO_D AND req_two_d = '1' ELSE '0';
+	ack_llc   <= '1' WHEN cur_state = REQLLC   AND req_llc   = '1' ELSE '0';
 	
 END structure;

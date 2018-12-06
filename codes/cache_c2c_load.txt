@@ -1,0 +1,4 @@
+This test checks the correct functionality of L1 data caches on the next cases:
+1) An L1 cache modifies a block, then another L1 loads the same block thus:
+	1.1) The first L1 begins a cache to cache transfer leaving the block as Shared
+	1.2) The LLC is notified and updates the state of its block to Shared

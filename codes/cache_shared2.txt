@@ -1,0 +1,5 @@
+This test checks the correct functionality of L1 data caches, L1 instruction caches and the last level cache (LLC) on the next cases:
+1) Load instruction blocks, have them be replaced with no effect on the Instruction L1s (as they are not modified, simply mark them as Invalid) (Both L1s)
+2) Load data blocks, have them be replaced with no effect on the Data L1s (as they are not modified, simply mark them as Invalid) (Both L1s)
+3) Load data blocks, have them be replaced from L1s and check that the Last Level Cache keeps the evicted block as Shared
+4) Load enough data from the Data L1s so a replacement occurs at the Last Level Cache while other caches have the block as Shared. Check that the LLC forces the L1s to evict the Shared block as it will be replaced in the LLC.

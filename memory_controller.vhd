@@ -7,18 +7,18 @@ USE work.utils.ALL;
 
 ENTITY memory_controller IS
 	PORT (
-		clk          : IN STD_LOGIC;
-		reset        : IN STD_LOGIC;
-		cmd          : IN STD_LOGIC_VECTOR(2 DOWNTO 0);
-		done         : OUT STD_LOGIC;
-		addr         : IN STD_LOGIC_VECTOR(31 DOWNTO 0);
+		clk          : IN    STD_LOGIC;
+		reset        : IN    STD_LOGIC;
+		cmd          : IN    STD_LOGIC_VECTOR(2 DOWNTO 0);
+		done         : OUT   STD_LOGIC;
+		addr         : IN    STD_LOGIC_VECTOR(31 DOWNTO 0);
 		data         : INOUT STD_LOGIC_VECTOR(127 DOWNTO 0);
-		mem_req      : OUT STD_LOGIC;
-		mem_we       : OUT STD_LOGIC;
-		mem_done     : IN STD_LOGIC;
-		mem_addr     : OUT STD_LOGIC_VECTOR(31 DOWNTO 0);
-		mem_data_in  : OUT STD_LOGIC_VECTOR(127 DOWNTO 0);
-		mem_data_out : IN STD_LOGIC_VECTOR(127 DOWNTO 0)
+		mem_req      : OUT   STD_LOGIC;
+		mem_we       : OUT   STD_LOGIC;
+		mem_done     : IN    STD_LOGIC;
+		mem_addr     : OUT   STD_LOGIC_VECTOR(31 DOWNTO 0);
+		mem_data_in  : OUT   STD_LOGIC_VECTOR(127 DOWNTO 0);
+		mem_data_out : IN    STD_LOGIC_VECTOR(127 DOWNTO 0)
 	);
 END memory_controller;
 
@@ -57,7 +57,7 @@ BEGIN
 		state_nx <= state;
 		IF state = READY THEN
 			IF is_cmd(cmd) THEN
-				IF cmd = CMD_GET THEN
+				IF cmd = CMD_GETWR OR cmd = CMD_GETRD THEN
 					state_nx <= WAIT_GET;
 				ELSIF cmd = CMD_PUT THEN
 					state_nx <= WAIT_PUT;

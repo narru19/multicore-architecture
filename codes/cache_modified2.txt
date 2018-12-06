@@ -1,0 +1,4 @@
+This test checks the correct functionality of the L1 data caches on the next cases:
+1) Load a block on both Data L1s, then have one processor loop endlessly and another one produce a store operation. Check if the invalidation of the looping-processor occurs.
+2) Check also that the LLC invalidates the block as well
+

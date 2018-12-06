@@ -19,9 +19,11 @@ ENTITY fetch IS
 		invalid_access : OUT   STD_LOGIC;
 		arb_req        : OUT   STD_LOGIC;
 		arb_ack        : IN    STD_LOGIC;
-		mem_cmd        : INOUT STD_LOGIC_VECTOR(2 DOWNTO 0);
+		mem_cmd        : INOUT STD_LOGIC_VECTOR(2   DOWNTO 0);
 		mem_addr       : INOUT STD_LOGIC_VECTOR(31  DOWNTO 0);
 		mem_done       : INOUT STD_LOGIC;
+		mem_force_inv  : INOUT STD_LOGIC;
+		mem_c2c        : INOUT STD_LOGIC;
 		mem_data       : INOUT STD_LOGIC_VECTOR(127 DOWNTO 0)
 	);
 END fetch;
@@ -39,17 +41,19 @@ ARCHITECTURE structure OF fetch IS
 			state_nx       : OUT   inst_cache_state_t;
 			arb_req        : OUT   STD_LOGIC;
 			arb_ack        : IN    STD_LOGIC;
-			mem_cmd        : INOUT STD_LOGIC_VECTOR(2 DOWNTO 0);
+			mem_cmd        : INOUT STD_LOGIC_VECTOR(2  DOWNTO 0);
 			mem_req_abort  : IN    STD_LOGIC;
 			mem_addr       : INOUT STD_LOGIC_VECTOR(31 DOWNTO 0);
 			mem_done       : INOUT STD_LOGIC;
+			mem_force_inv  : INOUT STD_LOGIC;
+			mem_c2c        : INOUT STD_LOGIC;
 			mem_data       : INOUT STD_LOGIC_VECTOR(127 DOWNTO 0)
 		);
 	END COMPONENT;
 
-    SIGNAL cache_done : STD_LOGIC;
+    SIGNAL cache_done     : STD_LOGIC;
     SIGNAL cache_data_out : STD_LOGIC_VECTOR(31 DOWNTO 0);
-    SIGNAL cache_state : inst_cache_state_t;
+    SIGNAL cache_state    : inst_cache_state_t;
     SIGNAL cache_state_nx : inst_cache_state_t;
 
 	BEGIN
@@ -66,21 +70,23 @@ ARCHITECTURE structure OF fetch IS
 
 
     ci : cache_inst PORT MAP(
-        clk => clk,
-        reset => reset,
-        addr => pc,
-        data_out => cache_data_out,
-        done => cache_done,
-        invalid_access => invalid_access,
-        state => cache_state,
-        state_nx => cache_state_nx,
-		arb_req => arb_req,
-		arb_ack => arb_ack,
-		mem_cmd => mem_cmd,
-        mem_req_abort => branch_taken,
-        mem_addr => mem_addr,
-        mem_done => mem_done,
-        mem_data => mem_data
+		clk            => clk,
+		reset          => reset,
+		addr           => pc,
+		data_out       => cache_data_out,
+		done           => cache_done,
+		invalid_access => invalid_access,
+		state          => cache_state,
+		state_nx       => cache_state_nx,
+		arb_req        => arb_req,
+		arb_ack        => arb_ack,
+		mem_cmd        => mem_cmd,
+		mem_req_abort  => branch_taken,
+		mem_addr       => mem_addr,
+		mem_done       => mem_done,
+		mem_force_inv  => mem_force_inv,
+		mem_c2c        => mem_c2c,
+		mem_data       => mem_data
     );
 
     inst <= cache_data_out;

@@ -21,6 +21,8 @@ ENTITY cache_inst IS
 		mem_req_abort  : IN    STD_LOGIC;
 		mem_addr       : INOUT STD_LOGIC_VECTOR(31 DOWNTO 0);
 		mem_done       : INOUT STD_LOGIC;
+		mem_force_inv  : INOUT STD_LOGIC;
+		mem_c2c        : INOUT STD_LOGIC;
 		mem_data       : INOUT STD_LOGIC_VECTOR(127 DOWNTO 0)
 	);
 END cache_inst;
@@ -32,8 +34,8 @@ ARCHITECTURE structure OF cache_inst IS
 	CONSTANT CACHE_LINES : INTEGER := 4;
 
 	TYPE valid_fields_t IS ARRAY(CACHE_LINES-1 DOWNTO 0) OF STD_LOGIC;
-	TYPE tag_fields_t	IS ARRAY(CACHE_LINES-1 DOWNTO 0) OF STD_LOGIC_VECTOR(TAG_BITS-1 DOWNTO 0);
-	TYPE data_fields_t	IS ARRAY(CACHE_LINES-1 DOWNTO 0) OF STD_LOGIC_VECTOR(DATA_BITS-1 DOWNTO 0);
+	TYPE tag_fields_t   IS ARRAY(CACHE_LINES-1 DOWNTO 0) OF STD_LOGIC_VECTOR(TAG_BITS-1 DOWNTO 0);
+	TYPE data_fields_t  IS ARRAY(CACHE_LINES-1 DOWNTO 0) OF STD_LOGIC_VECTOR(DATA_BITS-1 DOWNTO 0);
 
 	-- Fields of the cache
 	SIGNAL valid_fields	: valid_fields_t;
@@ -49,16 +51,20 @@ ARCHITECTURE structure OF cache_inst IS
 	SIGNAL state_nx_i : inst_cache_state_t;
 
 	PROCEDURE clear_bus(
-			SIGNAL mem_cmd  : OUT STD_LOGIC_VECTOR(2   DOWNTO 0);
-			SIGNAL mem_addr : OUT STD_LOGIC_VECTOR(31  DOWNTO 0);
-			SIGNAL mem_data : OUT STD_LOGIC_VECTOR(127 DOWNTO 0);
-			SIGNAL mem_done : OUT STD_LOGIC
+			SIGNAL mem_cmd       : OUT STD_LOGIC_VECTOR(2   DOWNTO 0);
+			SIGNAL mem_addr      : OUT STD_LOGIC_VECTOR(31  DOWNTO 0);
+			SIGNAL mem_data      : OUT STD_LOGIC_VECTOR(127 DOWNTO 0);
+			SIGNAL mem_done      : OUT STD_LOGIC;
+			SIGNAL mem_force_inv : OUT STD_LOGIC;
+			SIGNAL mem_c2c       : OUT STD_LOGIC
 		) IS
 	BEGIN
-		mem_cmd  <= (OTHERS => 'Z');
-		mem_addr <= (OTHERS => 'Z');
-		mem_data <= (OTHERS => 'Z');
-		mem_done <= 'Z';
+		mem_cmd       <= (OTHERS => 'Z');
+		mem_addr      <= (OTHERS => 'Z');
+		mem_data      <= (OTHERS => 'Z');
+		mem_done      <= 'Z';
+		mem_force_inv <= 'Z';
+		mem_c2c       <= 'Z';
 	END PROCEDURE;
 BEGIN
 	next_state_process : PROCESS(clk, reset, state, hit_cache, addr, mem_req_abort, mem_done, mem_data, arb_ack)
@@ -93,7 +99,7 @@ BEGIN
 				valid_fields(i) <= '0';
 			END LOOP;
 			arb_req <= '0';
-			clear_bus(mem_cmd, mem_addr, mem_data, mem_done);
+			clear_bus(mem_cmd, mem_addr, mem_data, mem_done, mem_force_inv, mem_c2c);
 		ELSIF falling_edge(clk) AND reset = '0' THEN
 			can_clear_bus := TRUE;
 			IF state = READY THEN
@@ -127,7 +133,7 @@ BEGIN
 			END IF;
 
 			IF can_clear_bus THEN
-				clear_bus(mem_cmd, mem_addr, mem_data, mem_done);
+				clear_bus(mem_cmd, mem_addr, mem_data, mem_done, mem_force_inv, mem_c2c);
 			END IF;
 		END IF;
 	END PROCESS execution_process;

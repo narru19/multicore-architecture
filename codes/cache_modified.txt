@@ -1,0 +1,6 @@
+This test checks the correct functionality of the L1 data caches on the next cases:
+1) Store a block and have it be as Modified in an L1 (straight from Invalid to Modified)
+2) Store the same block as before and see that no transaction happens, as the block is already in the L1
+3) Load the same block and check that its state does not change and no transactions are carried
+4) Load a block as Shared and afterwards produce a store operation on the same block. Check that the block changes from Shared to Modified with no further transactions
+5) On the last one (4) check also that the LLC invalidates the block as it is modified in some cache

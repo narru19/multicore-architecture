@@ -1,0 +1,4 @@
+This test checks the correct functionality of the L1 data caches on the next cases:
+1) Load a block and have it be as Shared in an L1
+2) Load the same block as the previous L1, from another L1, and check that they both can have it as Shared at the same time.
+
