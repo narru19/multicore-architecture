@@ -28,7 +28,19 @@ ENTITY cache_stage IS
 		mem_data        : INOUT STD_LOGIC_VECTOR(127 DOWNTO 0);
 		sb_store_id     : IN    STD_LOGIC_VECTOR(3 DOWNTO 0);
 		sb_store_commit : IN    STD_LOGIC;
-		sb_squash       : IN    STD_LOGIC
+		sb_squash       : IN    STD_LOGIC;
+		dir_addr        : OUT   STD_LOGIC_VECTOR(31 DOWNTO 0);
+		dir_we          : OUT   STD_LOGIC;
+		dir_re          : OUT   STD_LOGIC;
+		dir_evict       : OUT   STD_LOGIC;
+		dir_evict_addr  : OUT   STD_LOGIC_VECTOR(31 DOWNTO 0);
+		dir_ack         : IN    STD_LOGIC;
+		dir_inv         : IN    STD_LOGIC;
+		dir_inv_llc     : IN    STD_LOGIC;
+		dir_inv_addr    : IN    STD_LOGIC_VECTOR(31 DOWNTO 0);
+		dir_inv_ack     : OUT   STD_LOGIC;
+		dir_c2c         : IN    STD_LOGIC;
+		dir_c2c_addr    : IN    STD_LOGIC_VECTOR(31 DOWNTO 0)
 	);
 END cache_stage;
 
@@ -61,7 +73,19 @@ ARCHITECTURE cache_stage_behavior OF cache_stage IS
 			obs_inv_stop   : IN    STD_LOGIC;
 			sb_addr        : IN    STD_LOGIC_VECTOR(31 DOWNTO 0);
 			sb_we          : IN    STD_LOGIC;
-			sb_data_in     : IN    STD_LOGIC_VECTOR(31 DOWNTO 0)
+			sb_data_in     : IN    STD_LOGIC_VECTOR(31 DOWNTO 0);
+			dir_addr       : OUT   STD_LOGIC_VECTOR(31 DOWNTO 0);
+			dir_we         : OUT   STD_LOGIC;
+			dir_re         : OUT   STD_LOGIC;
+			dir_evict      : OUT   STD_LOGIC;
+			dir_evict_addr : OUT   STD_LOGIC_VECTOR(31 DOWNTO 0);
+			dir_ack        : IN    STD_LOGIC;
+			dir_inv        : IN    STD_LOGIC;
+			dir_inv_llc    : IN    STD_LOGIC;
+			dir_inv_addr   : IN    STD_LOGIC_VECTOR(31 DOWNTO 0);
+			dir_inv_ack    : OUT   STD_LOGIC;
+			dir_c2c        : IN    STD_LOGIC;
+			dir_c2c_addr   : IN    STD_LOGIC_VECTOR(31 DOWNTO 0)
 		);
 	END COMPONENT;
 
@@ -144,7 +168,19 @@ BEGIN
 		obs_inv_stop   => sb_cache_obs_inv_stop,
 		sb_addr        => sb_cache_addr,
 		sb_we          => sb_cache_we,
-		sb_data_in     => sb_cache_data
+		sb_data_in     => sb_cache_data,
+		dir_addr       => dir_addr,
+		dir_we         => dir_we,
+		dir_re         => dir_re,
+		dir_evict      => dir_evict,
+		dir_evict_addr => dir_evict_addr,
+		dir_ack        => dir_ack,
+		dir_inv        => dir_inv,
+		dir_inv_llc    => dir_inv_llc,
+		dir_inv_addr   => dir_inv_addr,
+		dir_inv_ack    => dir_inv_ack,
+		dir_c2c        => dir_c2c,
+		dir_c2c_addr   => dir_c2c_addr
 	);
 
 	sb : store_buffer PORT MAP(

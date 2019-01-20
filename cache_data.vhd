@@ -33,15 +33,31 @@ ENTITY cache_data IS
 		obs_inv_stop   : IN    STD_LOGIC;
 		sb_addr        : IN    STD_LOGIC_VECTOR(31 DOWNTO 0);
 		sb_we          : IN    STD_LOGIC;
-		sb_data_in     : IN    STD_LOGIC_VECTOR(31 DOWNTO 0)
+		sb_data_in     : IN    STD_LOGIC_VECTOR(31 DOWNTO 0);
+		-- Directory Interface
+		dir_addr       : OUT   STD_LOGIC_VECTOR(31 DOWNTO 0);
+		dir_we         : OUT   STD_LOGIC;                     -- L1 wants to modify the address
+		dir_re         : OUT   STD_LOGIC;                     -- L1 wants to read the address
+		dir_evict      : OUT   STD_LOGIC;                     -- L1 wants to evict the address
+		dir_evict_addr : OUT   STD_LOGIC_VECTOR(31 DOWNTO 0); -- The address to evict
+		dir_ack        : IN    STD_LOGIC;                     -- The directory signals that L1 can go on with its request
+		dir_inv        : IN    STD_LOGIC;                     -- The directory wants the L1 to invalidate an addrss
+		dir_inv_llc    : IN    STD_LOGIC;                     -- Whether the invalidation was triggered by the LLC
+		dir_inv_addr   : IN    STD_LOGIC_VECTOR(31 DOWNTO 0); -- The address to invalidate
+		dir_inv_ack    : OUT   STD_LOGIC;                     -- Acknowledgment of invalidation from L1 to directory
+		dir_c2c        : IN    STD_LOGIC;                     -- The directory wants the L1 to make a C2C transaction (dir_c2c_addr)
+                                                              --   Whether to invalidate the transfered line is known through (dir_inv)
+                                                              --   Once transfered, this is signaled through mem_done (mem_done = 1)
+		dir_c2c_addr   : IN    STD_LOGIC_VECTOR(31 DOWNTO 0)  -- The address of the data that must be transfered
 	);
 END cache_data;
+
 
 ARCHITECTURE cache_data_behavior OF cache_data IS
 	CONSTANT BYTE_BITS : INTEGER := 8;
 	CONSTANT WORD_BITS : INTEGER := 32;
 
-	TYPE hit_t 			IS ARRAY(3 DOWNTO 0) OF STD_LOGIC;
+	TYPE hit_t          IS ARRAY(3 DOWNTO 0) OF STD_LOGIC;
 	TYPE lru_fields_t   IS ARRAY(3 DOWNTO 0) OF INTEGER RANGE 0 to 3;
 	TYPE tag_fields_t   IS ARRAY(3 DOWNTO 0) OF STD_LOGIC_VECTOR(27 DOWNTO 0);
 	TYPE data_fields_t  IS ARRAY(3 DOWNTO 0) OF STD_LOGIC_VECTOR(127 DOWNTO 0);
@@ -77,15 +93,17 @@ ARCHITECTURE cache_data_behavior OF cache_data IS
 	SIGNAL obs_hit_line_i      : hit_t;
 	SIGNAL obs_hit_line_num_i  : INTEGER RANGE 0 TO 3 := 0;
 	
-	-- Determine if the has been a conflict
-	SIGNAL obs_store_and_block_is_shared_i     : STD_LOGIC := '0';
-	SIGNAL obs_store_and_block_is_modified_i   : STD_LOGIC := '0';
-	SIGNAL obs_load_and_block_is_modified_i    : STD_LOGIC := '0';
-	SIGNAL obs_store_from_other_L1             : STD_LOGIC := '0';
-	SIGNAL obs_store_from_other_L1_and_present : STD_LOGIC := '0';
-	SIGNAL obs_llc_evicts_and_present          : STD_LOGIC := '0';
-	SIGNAL obs_llc_evicts                      : STD_LOGIC := '0';
-
+	-- Determine the line of the cache that has hit with dir_inv_addr
+	SIGNAL dir_inv_hit_i          : STD_LOGIC := '0';
+	SIGNAL dir_inv_hit_line_i     : hit_t;
+	SIGNAL dir_inv_hit_line_num_i : INTEGER RANGE 0 TO 3 := 0;
+	
+	-- Determine the line of the cache that has hit with dir_c2c_addr
+	SIGNAL c2c_hit_i          : STD_LOGIC := '0';
+	SIGNAL c2c_hit_line_i     : hit_t;
+	SIGNAL c2c_hit_line_num_i : INTEGER RANGE 0 TO 3 := 0;
+	
+	-- Determine if there has been a conflict
 	SIGNAL obs_rd_i              : STD_LOGIC := '0';
 	SIGNAL obs_hit_line_rd_i     : hit_t;
 	SIGNAL obs_hit_line_rd_num_i : INTEGER RANGE 0 TO 3 := 0;
@@ -179,7 +197,7 @@ END PROCESS internal_register;
 
 
 -- Process that computes the next state of the cache
-next_state : PROCESS(clk, reset, state_i, obs_state_i, re, we, addr, mem_cmd, mem_addr, mem_done, mem_force_inv, mem_c2c, proc_hit_i, proc_repl_i, proc_inv_stop, obs_hit_i, obs_inv_stop, obs_store_and_block_is_shared_i, obs_store_and_block_is_modified_i, obs_load_and_block_is_modified_i, obs_store_from_other_L1_and_present, obs_llc_evicts_and_present, invalid_access_i)
+next_state : PROCESS(clk, reset, state_i, obs_state_i, re, we, addr, mem_cmd, mem_addr, mem_done, mem_force_inv, mem_c2c, proc_hit_i, proc_repl_i, proc_hit_line_num_i, obs_hit_i, obs_inv_stop, invalid_access_i, dir_ack, dir_inv, dir_c2c, dir_inv_hit_i, dir_inv_hit_line_num_i, dir_inv_hit_line_i, sb_addr, sb_we, sb_data_in, c2c_hit_i, c2c_hit_line_i, c2c_hit_line_num_i)
 BEGIN
 	IF reset = '1' THEN
 		state_nx_i <= READY;
@@ -187,6 +205,7 @@ BEGIN
 	ELSIF clk = '1' THEN
 		-- Processor Next State
 		state_nx_i <= state_i;
+		
 		IF state_i = READY THEN
 			IF (re = '1' OR we = '1') AND invalid_access_i = '0' THEN
 				IF proc_inv_stop = '1' THEN
@@ -194,13 +213,12 @@ BEGIN
 				ELSE
 					IF proc_hit_i = '1' THEN
 						IF valid_fields(proc_hit_line_num_i) = STATE_SHARED AND we = '1' THEN
-							-- Must tell other L1s and LLC that we want the block as MODIFIED
-							state_nx_i <= FORCEINV; 
+							state_nx_i <= WAIT_DIR; 
 						ELSE
 							state_nx_i <= READY;
 						END IF;
 					ELSE
-						state_nx_i <= ARBREQ;
+						state_nx_i <= WAIT_DIR;
 					END IF;
 				END IF;
 			END IF;
@@ -209,122 +227,72 @@ BEGIN
 			IF proc_inv_stop = '0' THEN
 				IF proc_hit_i = '1' THEN
 					IF valid_fields(proc_hit_line_num_i) = STATE_SHARED AND we = '1' THEN
-						-- Must tell other L1s and LLC that we want the block as MODIFIED
-						state_nx_i <= FORCEINV;
+						state_nx_i <= WAIT_DIR;
 					ELSE
 						state_nx_i <= READY;
 					END IF;
 				ELSE
-					state_nx_i <= ARBREQ;
+					state_nx_i <= WAIT_DIR;
 				END IF;
 			END IF;
 		
-		ELSIF state_i = FORCEINV THEN
-			IF arb_ack = '1' THEN
-				state_nx_i <= FORCEINVACK;
-			END IF;
-		
-		ELSIF state_i = FORCEINVACK THEN
-			IF mem_done = '1' THEN
-				state_nx_i <= READY;
+		ELSIF state_i = WAIT_DIR THEN
+			IF dir_ack = '1' THEN
+				IF proc_hit_i = '1' THEN
+					state_nx_i <= READY;
+				ELSIF (proc_hit_i = '0' AND proc_repl_i = '0') THEN
+					state_nx_i <= ARBREQ;
+				ELSIF (proc_hit_i = '0' AND proc_repl_i = '1') THEN
+					state_nx_i <= EVICT_ARB;
+				END IF;
 			END IF;
 		
 		ELSIF state_i = ARBREQ THEN
 			IF arb_ack = '1' THEN
-				IF proc_hit_i = '0' THEN
-					IF proc_repl_i = '1' AND valid_fields(proc_hit_line_num_i) = STATE_MODIFIED THEN
-						state_nx_i <= LINEREPL;
-					ELSE
-						state_nx_i <= LINEREQ;
-					END IF;
-				END IF;
+				state_nx_i <= MEMREQ;
 			END IF;
 		
-		ELSIF state_i = LINEREPL THEN
-			IF mem_done = '1' THEN
-				state_nx_i <= ARBREQ;
-			END IF;
-		
-		ELSIF state_i = LINEREQ THEN
+		ELSIF state_i = MEMREQ THEN
 			IF mem_done = '1' THEN
 				state_nx_i <= READY;
 			END IF;
+		
+		ELSIF state_i = EVICT_ARB THEN
+			IF arb_ack = '1' THEN
+				IF valid_fields(lru_line_num_i) = STATE_SHARED THEN
+					state_nx_i <= MEMREQ;
+				ELSIF valid_fields(lru_line_num_i) = STATE_MODIFIED THEN
+					state_nx_i <= EVICT_MEM;
+				END IF;
+			END IF;
+		
+		ELSIF state_i = EVICT_MEM THEN
+			IF mem_done = '1' THEN
+				state_nx_i <= FINISH_EVICT;
+			END IF;
+		
+		ELSIF state_i = FINISH_EVICT THEN
+			state_nx_i <= MEMREQ;
 		END IF;
 		
 		-- Observer Next State
 		obs_state_nx_i <= obs_state_i;
 		IF obs_state_i = READY THEN
-			-- If we're observing another L1 storing and we have the block as modified or shared and...
-			-- our processor is trying to store or load -> the block will soon be INVALID, switch to ARBREQ
-			IF obs_store_and_block_is_modified_i = '1' OR obs_store_and_block_is_shared_i = '1' THEN
+			IF dir_inv = '1' THEN
 				IF obs_inv_stop = '1' THEN
 					obs_state_nx_i <= WAITSB;
-				ELSIF (state_i = READY OR state_i = FORCEINV) AND (we = '1' OR re = '1') AND addr(31 DOWNTO 4) = mem_addr(31 DOWNTO 4) THEN
-					state_nx_i <= ARBREQ;
-					obs_state_nx_i <= READY;
-				END IF;
-			
-			-- If we're observing another L1 loading and we have the block as modified and...
-			-- our processor is trying to store -> the block will soon be SHARED, switch to FORCEINV
-			ELSIF obs_load_and_block_is_modified_i = '1' THEN
-				IF obs_inv_stop = '1' THEN
-					obs_state_nx_i <= WAITSB;
-				ELSIF state_i = READY AND we = '1' AND addr(31 DOWNTO 4) = mem_addr(31 DOWNTO 4) THEN
-					state_nx_i <= FORCEINV;
-					obs_state_nx_i <= READY;
-				END IF;
-				
-			-- If we're observing that some L1 is going from SHARED to MODIFIED and...
-			-- our processor is trying to store or load -> the block will soon be INVALID, switch to ARBREQ
-			ELSIF obs_store_from_other_L1_and_present = '1' THEN
-				IF obs_inv_stop = '1' THEN
-					obs_state_nx_i <= WAITSB;
-				ELSIF (state_i = READY OR state_i = FORCEINV) AND (we = '1' OR re = '1') AND addr(31 DOWNTO 4) = mem_addr(31 DOWNTO 4) THEN
-					state_nx_i <= ARBREQ;
-					obs_state_nx_i <= READY;
-				END IF;
-			
-			-- If we're observing that the LLC is evicting a block and...
-			-- our processor is trying to store or load -> the block will soon be INVALID, switch to ARBREQ
-			ELSIF obs_llc_evicts_and_present = '1' THEN
-				IF obs_inv_stop = '1' THEN
-					obs_state_nx_i <= WAITSB;
-				ELSIF (state_i = READY OR state_i = FORCEINV) AND (we = '1' OR re = '1') AND addr(31 DOWNTO 4) = mem_addr(31 DOWNTO 4) THEN
-					state_nx_i <= ARBREQ;
+				ELSIF (state_i = READY) AND (we = '1' OR re = '1') AND addr(31 DOWNTO 4) = dir_inv_addr(31 DOWNTO 4) THEN
+					state_nx_i <= WAIT_DIR;
 					obs_state_nx_i <= READY;
 				END IF;
 			END IF;
 		
 		ELSIF obs_state_i = WAITSB THEN
-			IF obs_store_and_block_is_modified_i = '1' OR obs_store_and_block_is_shared_i = '1' THEN
+			IF dir_inv = '1' THEN
 				IF obs_inv_stop = '0' THEN
 					obs_state_nx_i <= READY;
-					IF (state_i = READY OR state_i = FORCEINV) AND (we = '1' OR re = '1') AND addr(31 DOWNTO 4) = mem_addr(31 DOWNTO 4) THEN
-						state_nx_i <= ARBREQ;
-					END IF;
-				END IF;
-			
-			ELSIF obs_load_and_block_is_modified_i = '1' THEN
-				IF obs_inv_stop = '0' THEN
-					obs_state_nx_i <= READY;
-					IF state_i = READY AND we = '1' AND addr(31 DOWNTO 4) = mem_addr(31 DOWNTO 4) THEN
-						state_nx_i <= FORCEINV;
-					END IF;
-				END IF;
-			
-			ELSIF obs_store_from_other_L1_and_present = '1' THEN
-				IF obs_inv_stop = '0' THEN
-					obs_state_nx_i <= READY;
-					IF (state_i = READY OR state_i = FORCEINV) AND (we = '1' OR re = '1') AND addr(31 DOWNTO 4) = mem_addr(31 DOWNTO 4) THEN
-						state_nx_i <= ARBREQ;
-					END IF;
-				END IF;
-			
-			ELSIF obs_llc_evicts_and_present = '1' THEN
-				IF obs_inv_stop = '0' THEN
-					obs_state_nx_i <= READY;
-					IF (state_i = READY OR state_i = FORCEINV) AND (we = '1' OR re = '1') AND addr(31 DOWNTO 4) = mem_addr(31 DOWNTO 4) THEN
-						state_nx_i <= ARBREQ;
+					IF (state_i = READY) AND (we = '1' OR re = '1') AND addr(31 DOWNTO 4) = dir_inv_addr(31 DOWNTO 4) THEN
+						state_nx_i <= WAITSB;
 					END IF;
 				END IF;
 			END IF;
@@ -352,39 +320,40 @@ BEGIN
 					LRU_execute(lru_fields, proc_hit_line_num_i);
 					line_num := proc_hit_line_num_i;
 				END IF;
-			ELSIF state_nx_i = ARBREQ THEN
-				arb_req <= '1';
-			ELSIF state_nx_i = FORCEINV THEN
-				arb_req <= '1';
+			ELSIF state_nx_i = WAIT_DIR THEN
+				IF (proc_hit_i = '1') THEN
+					dir_re   <= re;
+					dir_we   <= we;
+					dir_addr <= addr;
+				ELSIF (proc_hit_i = '0' AND proc_repl_i = '0') THEN
+					dir_re   <= re;
+					dir_we   <= we;
+					dir_addr <= addr;
+				ELSIF (proc_hit_i = '0' AND proc_repl_i = '1') THEN
+					dir_evict      <= '1';
+					dir_evict_addr <= tag_fields(lru_line_num_i) & "0000";
+					dir_re         <= re;
+					dir_we         <= we;
+					dir_addr       <= addr;
+				END IF;
 			END IF;
 		
-		ELSIF state_i = FORCEINV THEN
-			IF state_nx_i = FORCEINVACK THEN
-				mem_addr      <= addr;
-				mem_cmd       <= CMD_INV_M;
-				mem_force_inv <= '1';
-				own_mem_cmd_i <= '1';
-				can_clear_bus := FALSE;
-			END IF;
-		
-		ELSIF state_i = FORCEINVACK THEN
+		ELSIF state_i = WAIT_DIR THEN
 			IF state_nx_i = READY THEN
 				LRU_execute(lru_fields, proc_hit_line_num_i);
 				valid_fields(proc_hit_line_num_i) <= STATE_MODIFIED;
+				dir_re <= '0';
+				dir_we <= '0';
 				line_num := proc_hit_line_num_i;
-				arb_req <= '0';
-			ELSE
-				can_clear_bus := FALSE;
+			ELSIF (state_nx_i = ARBREQ OR state_nx_i = EVICT_ARB) THEN
+				arb_req   <= '1';
+				dir_re    <= '0';
+				dir_we    <= '0';
+				dir_evict <= '0';
 			END IF;
 		
 		ELSIF state_i = ARBREQ THEN
-			IF state_nx_i = LINEREPL THEN
-				mem_cmd       <= CMD_PUT;
-				mem_addr      <= tag_fields(lru_line_num_i) & "0000";
-				mem_data      <= data_fields(lru_line_num_i);
-				own_mem_cmd_i <= '1';
-				can_clear_bus := FALSE;
-			ELSIF state_nx_i = LINEREQ THEN
+			IF state_nx_i = MEMREQ THEN
 				IF re = '1' THEN
 					mem_cmd <= CMD_GETRD;
 				ELSIF we = '1' THEN
@@ -395,15 +364,7 @@ BEGIN
 				can_clear_bus := FALSE;
 			END IF;
 		
-		ELSIF state_i = LINEREPL THEN
-			IF state_nx_i = ARBREQ THEN
-				arb_req <= '1';
-				valid_fields(lru_line_num_i) <= STATE_INVALID;
-			ELSE
-				can_clear_bus := FALSE;
-			END IF;
-		
-		ELSIF state_i = LINEREQ THEN
+		ELSIF state_i = MEMREQ THEN
 			IF state_nx_i = READY THEN
 				IF re = '1' THEN
 					valid_fields(lru_line_num_i) <= STATE_SHARED;
@@ -418,6 +379,41 @@ BEGIN
 			ELSE
 				can_clear_bus := FALSE;
 			END IF;
+		
+		ELSIF state_i = EVICT_ARB THEN
+			IF state_nx_i = MEMREQ THEN
+				IF re = '1' THEN
+					mem_cmd <= CMD_GETRD;
+				ELSIF we = '1' THEN
+					mem_cmd <= CMD_GETWR;
+				END IF;
+				mem_addr      <= addr;
+				own_mem_cmd_i <= '1';
+				can_clear_bus := FALSE;
+			ELSIF state_nx_i = EVICT_MEM THEN
+				mem_cmd       <= CMD_PUT;
+				mem_addr      <= tag_fields(lru_line_num_i) & "0000";
+				mem_data      <= data_fields(lru_line_num_i);
+				own_mem_cmd_i <= '1';
+				can_clear_bus := FALSE;
+			END IF;
+		
+		ELSIF state_i = EVICT_MEM THEN
+			IF state_nx_i = FINISH_EVICT THEN
+				IF re = '1' THEN
+					mem_cmd <= CMD_GETRD;
+				ELSIF we = '1' THEN
+					mem_cmd <= CMD_GETWR;
+				END IF;
+				mem_addr      <= addr;
+				own_mem_cmd_i <= '1';
+				can_clear_bus := FALSE;
+			ELSE
+				can_clear_bus := FALSE;
+			END IF;
+			
+		ELSIF state_i = FINISH_EVICT THEN
+			can_clear_bus := FALSE;
 		END IF;
 		
 		IF sb_we = '1' THEN
@@ -425,59 +421,23 @@ BEGIN
 		END IF;
 		
 		IF obs_state_i = READY OR obs_state_i = WAITSB THEN
+			dir_inv_ack <= '0';
 			IF obs_state_nx_i = READY THEN
-				-- Observe store and block as S -> Invalidate, LLC will provide data
-				IF obs_store_and_block_is_shared_i = '1' THEN
-					valid_fields(obs_hit_line_num_i) <= STATE_INVALID;
+				IF (dir_inv = '1' AND dir_c2c = '0' AND dir_inv_hit_i = '1') THEN
+					valid_fields(dir_inv_hit_line_num_i) <= STATE_INVALID;
+					dir_inv_ack <= '1';
 				
-				-- Observe store and block as M -> Invalidate, provide data through C2C
-				ELSIF obs_store_and_block_is_modified_i = '1' THEN
-					-- Mark data as available so LLC knows when the data in the bus is valid
-					-- This has no effect for this case, as the block will be MODIFIED in another
-					-- L1, however we still signal this so that the LLC can go on
-					mem_c2c  <= '1'; -- So that the LLC knows when to update if needed
-					mem_done <= '1'; -- So that the other L1 knows when the data is ready
-					mem_data <= data_fields(obs_hit_line_num_i);
-					valid_fields(obs_hit_line_num_i) <= STATE_INVALID;
-					can_clear_bus := FALSE;
-				
-				-- Observe load and block as M -> Shared, provide data through C2C
-				ELSIF obs_load_and_block_is_modified_i = '1' THEN
-					-- Mark data as available so LLC knows when the data in the bus is valid
-					-- In this case, when the LLC receives "mem_c2c", it will know that it has
-					-- to update its data and the state of the block to SHARED
-					mem_c2c  <= '1';
+				ELSIF (dir_c2c = '1' AND own_mem_cmd_i = '0' AND mem_addr = dir_c2c_addr AND c2c_hit_i = '1') THEN
+					mem_c2c <= '1';
 					mem_done <= '1';
-					mem_data <= data_fields(obs_hit_line_num_i);
-					valid_fields(obs_hit_line_num_i) <= STATE_SHARED;
+					mem_data <= data_fields(c2c_hit_line_num_i);
 					can_clear_bus := FALSE;
-				
-				-- Observe that another L1 changes a block from S to M -> respond that
-				-- we're coherent and invalidate if the block is present in the current L1
-				ELSIF obs_store_from_other_L1 = '1' THEN
-					-- If another L1 is changing from SHARED to MODIFIED, we must answer that
-					-- we are coherent, and invalidate the block that is being modified in the
-					-- other cache if it must be done. The LLC will invalidate within 1 cycle,
-					-- and the other L1 will be waiting for our acknowledgement "mem_done".
-					mem_done <= '1';
-					IF obs_store_from_other_L1_and_present = '1' THEN
-						valid_fields(obs_hit_line_num_i) <= STATE_INVALID;
+					IF (dir_inv = '0') THEN
+						valid_fields(c2c_hit_line_num_i) <= STATE_SHARED;
+					ELSIF (dir_inv = '1') THEN
+						valid_fields(c2c_hit_line_num_i) <= STATE_INVALID;
+						dir_inv_ack <= '1';
 					END IF;
-					can_clear_bus := FALSE;
-				
-				-- Observe that the LLC is evicting some block
-				ELSIF obs_llc_evicts = '1' THEN
-					-- If an LLC is evicting a block, respond that we've invalidated whether it is
-					-- present or not. If it is present and it is SHARED, simply invalidate. If it
-					-- is present and it is MODIFIED, this won't be the path taken since the LLC will
-					-- create a fake GETWR request and this L1 will activate the C2C transfer (obs 2)
-					IF obs_llc_evicts_and_present = '1' THEN
-						-- Cannot happen here, will happen in "obs_store_and_block_is_modified_i"
-						-- IF (valid_fields(obs_hit_line_num_i) = STATE_MODIFIED) THEN
-						valid_fields(obs_hit_line_num_i) <= STATE_INVALID;
-					END IF;
-					done_inv <= '1';
-					can_clear_bus := FALSE;
 				END IF;
 			END IF;
 		END IF;
@@ -530,10 +490,10 @@ proc_hit_i <= proc_hit_line_i(0) OR proc_hit_line_i(1) OR proc_hit_line_i(2) OR 
 proc_repl_i <= (re OR we) AND NOT proc_hit_i AND (to_std_logic(valid_fields(lru_line_num_i) = STATE_SHARED) OR to_std_logic(valid_fields(lru_line_num_i) = STATE_MODIFIED));
 
 -- For each line, determine if the observer has hit
-obs_hit_line_i(0) <= '1' WHEN (valid_fields(0) = STATE_SHARED OR valid_fields(0) = STATE_MODIFIED) AND is_cmd(mem_cmd) AND own_mem_cmd_i = '0' AND tag_fields(0) = mem_addr(31 DOWNTO 4) ELSE '0';
-obs_hit_line_i(1) <= '1' WHEN (valid_fields(1) = STATE_SHARED OR valid_fields(1) = STATE_MODIFIED) AND is_cmd(mem_cmd) AND own_mem_cmd_i = '0' AND tag_fields(1) = mem_addr(31 DOWNTO 4) ELSE '0';
-obs_hit_line_i(2) <= '1' WHEN (valid_fields(2) = STATE_SHARED OR valid_fields(2) = STATE_MODIFIED) AND is_cmd(mem_cmd) AND own_mem_cmd_i = '0' AND tag_fields(2) = mem_addr(31 DOWNTO 4) ELSE '0';
-obs_hit_line_i(3) <= '1' WHEN (valid_fields(3) = STATE_SHARED OR valid_fields(3) = STATE_MODIFIED) AND is_cmd(mem_cmd) AND own_mem_cmd_i = '0' AND tag_fields(3) = mem_addr(31 DOWNTO 4) ELSE '0';
+obs_hit_line_i(0) <= '1' WHEN tag_fields(0) = mem_addr(31 DOWNTO 4) ELSE '0';
+obs_hit_line_i(1) <= '1' WHEN tag_fields(1) = mem_addr(31 DOWNTO 4) ELSE '0';
+obs_hit_line_i(2) <= '1' WHEN tag_fields(2) = mem_addr(31 DOWNTO 4) ELSE '0';
+obs_hit_line_i(3) <= '1' WHEN tag_fields(3) = mem_addr(31 DOWNTO 4) ELSE '0';
 
 -- Determine which line has hit the observation
 obs_hit_line_num_i <=
@@ -543,31 +503,37 @@ obs_hit_line_num_i <=
 	ELSE 3 WHEN obs_hit_line_i(3) = '1'
 	ELSE 0;
 
--- Determine whether there was an observer hit
-obs_hit_i <= '1' WHEN (obs_hit_line_i(0) = '1' OR obs_hit_line_i(1) = '1' OR obs_hit_line_i(2) = '1' OR obs_hit_line_i(3) = '1') ELSE '0';
+-- For each line, determine if the observer has hit
+c2c_hit_line_i(0) <= '1' WHEN tag_fields(0) = dir_c2c_addr(31 DOWNTO 4) ELSE '0';
+c2c_hit_line_i(1) <= '1' WHEN tag_fields(1) = dir_c2c_addr(31 DOWNTO 4) ELSE '0';
+c2c_hit_line_i(2) <= '1' WHEN tag_fields(2) = dir_c2c_addr(31 DOWNTO 4) ELSE '0';
+c2c_hit_line_i(3) <= '1' WHEN tag_fields(3) = dir_c2c_addr(31 DOWNTO 4) ELSE '0';
 
--- Determine if the cache observes a conflict when someone's trying to...
--- 1) Get a block with intention to write (CMD_GETWR) and we have it as SHARED
---   > Must invalidate
--- 2) Get a block with intention to write (CMD_GETWR) and we have it as MODIFIED
---   > Must transfer Cache 2 Cache & switch from MODIFIED to INVALID
--- 3) Get a block with intention to read  (CMD_GETRD) and we have it as MODIFIED
---   > Must transfer Cache 2 Cache & switch from MODIFIED to SHARED
--- 4) An L1 changes a block from SHARED to MODIFIED
---   > Must answer with an ack, whether we have that same block or not
--- 5) Same as 4) but we have the block as SHARED
---   > Must switch from SHARED to INVALID (and also answer with an ack through "mem_done", done by 4)
--- 6) The LLC evicts a block that is SHARED or MODIFIED
---   > Must respond whether we invalidate or it already is invalidated
--- 7) The LLC evicts a block that is SHARED or MODIFIED and we have it as SHARED or MODIFIED
---   > Must invalidate and update the LLC if needed (MODIFIED)
-obs_store_and_block_is_shared_i     <= '1' WHEN obs_hit_i = '1' AND mem_cmd = CMD_GETWR AND valid_fields(obs_hit_line_num_i) = STATE_SHARED ELSE '0';
-obs_store_and_block_is_modified_i   <= '1' WHEN obs_hit_i = '1' AND mem_cmd = CMD_GETWR AND valid_fields(obs_hit_line_num_i) = STATE_MODIFIED ELSE '0';
-obs_load_and_block_is_modified_i    <= '1' WHEN obs_hit_i = '1' AND mem_cmd = CMD_GETRD AND valid_fields(obs_hit_line_num_i) = STATE_MODIFIED ELSE '0';
-obs_store_from_other_L1             <= '1' WHEN is_cmd(mem_cmd) AND own_mem_cmd_i = '0' AND mem_cmd = CMD_INV_M ELSE '0';
-obs_store_from_other_L1_and_present <= '1' WHEN obs_hit_i = '1' AND mem_cmd = CMD_INV_M ELSE '0';
-obs_llc_evicts                      <= '1' WHEN is_cmd(mem_cmd) AND own_mem_cmd_i = '0' AND mem_cmd = CMD_INV_S ELSE '0';
-obs_llc_evicts_and_present          <= '1' WHEN obs_hit_i = '1' AND mem_cmd = CMD_INV_S ELSE '0';
+-- Determine which line has hit the observation
+c2c_hit_line_num_i <=
+	     0 WHEN c2c_hit_line_i(0) = '1'
+	ELSE 1 WHEN c2c_hit_line_i(1) = '1'
+	ELSE 2 WHEN c2c_hit_line_i(2) = '1'
+	ELSE 3 WHEN c2c_hit_line_i(3) = '1'
+	ELSE 0;
+
+c2c_hit_i <= c2c_hit_line_i(0) OR c2c_hit_line_i(1) OR c2c_hit_line_i(2) OR c2c_hit_line_i(3);
+
+-- For each line, determine if the dir_inv_addr has hit
+dir_inv_hit_line_i(0) <= '1' WHEN tag_fields(0) = dir_inv_addr(31 DOWNTO 4) ELSE '0';
+dir_inv_hit_line_i(1) <= '1' WHEN tag_fields(1) = dir_inv_addr(31 DOWNTO 4) ELSE '0';
+dir_inv_hit_line_i(2) <= '1' WHEN tag_fields(2) = dir_inv_addr(31 DOWNTO 4) ELSE '0';
+dir_inv_hit_line_i(3) <= '1' WHEN tag_fields(3) = dir_inv_addr(31 DOWNTO 4) ELSE '0';
+
+dir_inv_hit_i <= dir_inv_hit_line_i(0) OR dir_inv_hit_line_i(1) OR dir_inv_hit_line_i(2) OR dir_inv_hit_line_i(3);
+
+-- Determine which line has hit the dir_inv_addr
+dir_inv_hit_line_num_i <=
+	     0 WHEN dir_inv_hit_line_i(0) = '1'
+	ELSE 1 WHEN dir_inv_hit_line_i(1) = '1'
+	ELSE 2 WHEN dir_inv_hit_line_i(2) = '1'
+	ELSE 3 WHEN dir_inv_hit_line_i(3) = '1'
+	ELSE 0;
 
 -- Store buffer signals
 sb_line_i(0) <= to_std_logic(valid_fields(0) = STATE_MODIFIED) AND to_std_logic(tag_fields(0) = sb_addr(31 DOWNTO 4));
@@ -602,10 +568,7 @@ hit  <= (proc_hit_i AND (re OR (we AND to_std_logic(valid_fields(proc_hit_line_n
 proc_inv      <= proc_repl_i;
 proc_inv_addr <= tag_fields(lru_line_num_i) & "0000";
 
--- Blocks will invalidate only in cases 1), 2), 4) and 5) from the observer signals above.
--- Case 3) will not invalidate as it will go to SHARED, and case 6) is uncertain, it only happens in case 5) which is case 6) when the block isn't INVALID
--- obs_inv       <= obs_store_and_block_is_shared_i OR obs_store_and_block_is_modified_i OR obs_store_from_other_L1_and_present OR obs_llc_evicts_and_present;
-obs_inv       <= obs_store_and_block_is_shared_i OR obs_store_and_block_is_modified_i;
-obs_inv_addr  <= mem_addr;
+obs_inv       <= dir_inv AND dir_inv_hit_i AND NOT dir_inv_llc;
+obs_inv_addr  <= dir_inv_addr;
 
 END cache_data_behavior;

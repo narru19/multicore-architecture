@@ -33,7 +33,7 @@ ENTITY store_buffer IS
 END store_buffer;
 
 ARCHITECTURE store_buffer_behavior OF store_buffer IS
-	CONSTANT SB_ENTRIES : INTEGER := 12;
+	CONSTANT SB_ENTRIES : INTEGER := 32;
 
 	TYPE id_fields_t IS ARRAY(SB_ENTRIES - 1 DOWNTO 0) OF STD_LOGIC_VECTOR(3 DOWNTO 0);
 	TYPE valid_fields_t IS ARRAY(SB_ENTRIES - 1 DOWNTO 0) OF STD_LOGIC;

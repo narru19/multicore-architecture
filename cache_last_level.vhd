@@ -9,20 +9,31 @@ ENTITY cache_last_level IS
 	PORT (
 		clk             : IN    STD_LOGIC;
 		reset           : IN    STD_LOGIC;
-		cache0_done_inv : IN    STD_LOGIC;                      -- LLC-L1 direct signals
+		-- LLC-L1 direct signals
+		cache0_done_inv : IN    STD_LOGIC;
 		cache1_done_inv : IN    STD_LOGIC;
-		bus_done        : INOUT STD_LOGIC;                      -- LLC-L1 bus signals
+		-- LLC-L1 bus signals
+		bus_done        : INOUT STD_LOGIC;
 		bus_force_inv   : INOUT STD_LOGIC;
 		bus_c2c         : INOUT STD_LOGIC;
 		bus_cmd         : INOUT STD_LOGIC_VECTOR(2 DOWNTO 0);
 		bus_addr        : INOUT STD_LOGIC_VECTOR(31 DOWNTO 0);
 		bus_data        : INOUT STD_LOGIC_VECTOR(127 DOWNTO 0);
-		mem_done        : IN    STD_LOGIC;                      -- LLC-Mem signals
+		-- LLC-Mem signals
+		mem_done        : IN    STD_LOGIC;
 		mem_cmd         : OUT   STD_LOGIC_VECTOR(2 DOWNTO 0);
 		mem_addr        : OUT   STD_LOGIC_VECTOR(31 DOWNTO 0);
 		mem_data        : INOUT STD_LOGIC_VECTOR(127 DOWNTO 0);
 		arb_req         : OUT   STD_LOGIC;
-		arb_ack         : IN    STD_LOGIC
+		arb_ack         : IN    STD_LOGIC;
+		-- LLC-Directory signals
+		dir_inv         : IN    STD_LOGIC;                     -- Directory tells LLC it must invalidate an address
+		dir_inv_addr    : IN    STD_LOGIC_VECTOR(31 DOWNTO 0); -- The address to invalidate
+		dir_inv_ack     : OUT   STD_LOGIC;                     -- LLC tells directory that it has already invalidated
+		dir_evict       : OUT   STD_LOGIC;                     -- LLC tells directory it wants to evict a line
+		dir_addr        : OUT   STD_LOGIC_VECTOR(31 DOWNTO 0); -- The line to evict
+		dir_c2c         : IN    STD_LOGIC;                     -- Whether a C2C transfer is being made
+		dir_ack         : IN    STD_LOGIC                      -- The directory tells the LLC it can proceed with the eviction
 	);
 END cache_last_level;
 
@@ -74,6 +85,7 @@ ARCHITECTURE cache_last_level_behavior OF cache_last_level IS
 	SIGNAL priority_req_M : STD_LOGIC := '0';
 	SIGNAL priority_req_S : STD_LOGIC := '0';
 	
+	SIGNAL dir_inv_line_num_i : INTEGER RANGE 0 TO 31 := 0;
 	
 	-- Determine if there's a hit
 	FUNCTION has_access_hit (
@@ -229,7 +241,7 @@ ARCHITECTURE cache_last_level_behavior OF cache_last_level IS
 	END PROCESS internal_register;
 	
 	-- Process that computes the next state of the cache
-	next_state_process : PROCESS(clk, reset, state_i, mem_done, arb_ack, hit_i, hit_avail_i, repl_i, repl_avail_i, bus_cmd, bus_done, bus_force_inv, bus_c2c, priority_req_M, priority_req_S)
+	next_state_process : PROCESS(clk, reset, state_i, mem_done, arb_ack, hit_i, hit_avail_i, repl_i, repl_avail_i, bus_cmd, bus_done, bus_force_inv, bus_c2c, priority_req_M, priority_req_S, dir_inv, dir_ack, dir_c2c)
 	BEGIN
 		IF reset = '1' THEN
 			state_nx_i <= READY;
@@ -238,11 +250,13 @@ ARCHITECTURE cache_last_level_behavior OF cache_last_level IS
 			state_nx_i <= state_i;
 			
 			IF state_i = READY THEN
-				IF priority_req_M = '1' THEN
-					state_nx_i <= ARB_LLC_REQ;
+				-- Special case, the directory tells the LLC to invalidate a line
+				IF (dir_inv = '1') THEN
+					state_nx_i <= INVALIDATE;
 				
-				ELSIF priority_req_S = '1' THEN
-					state_nx_i <= ARB_LLC_REQ;
+				-- Special case, must evict an available block
+				ELSIF (priority_req_M = '1' OR priority_req_S = '1') THEN
+					state_nx_i <= EVICT_DIR;
 				
 				ELSIF (bus_cmd = CMD_GET_RO OR bus_cmd = CMD_GETRD OR bus_cmd = CMD_GETWR) THEN
 					IF hit_i = '1' THEN
@@ -268,57 +282,29 @@ ARCHITECTURE cache_last_level_behavior OF cache_last_level IS
 				-- If an L1 tries to store a value, we must have it for sure, so update LLC
 				ELSIF (bus_cmd = CMD_PUT) THEN
 					state_nx_i <= READY;
-				
-				-- If an L1 is going from S to M, we will be asked to invalidate, and we will have the block for sure
-				ELSIF (bus_cmd = CMD_INV_M) THEN
-					state_nx_i <= READY;
 				END IF;
 			
 			ELSIF state_i = MEM_REQ THEN
 				IF mem_done = '1' THEN
-					state_nx_i <= READY;                -- MEM_REQ -> READY
+					state_nx_i <= READY;
 				END IF;
 			
-			ELSIF state_i = ARB_LLC_REQ THEN
-				IF arb_ack = '1' THEN
-					-- We must make an L1 evict a Modified block because it's being replaced in the LLC
+			ELSIF state_i = EVICT_DIR THEN
+				IF dir_ack = '1' THEN
 					IF priority_req_M = '1' THEN
-						state_nx_i <= BUS_WAIT;         -- ARB_LLC_REQ -> BUS_WAIT
-					-- We must make both L1s evict a Shared block because it's being replaced in the LLC
+						state_nx_i <= MEM_PUT;
 					ELSIF priority_req_S = '1' THEN
-						state_nx_i <= EVICT_WAIT;       -- ARB_LLC_REQ -> EVICT_WAIT
+						state_nx_i <= READY;
 					END IF;
 				END IF;
-			
-			ELSIF state_i = BUS_WAIT THEN
-				-- The cache has evicted the block, now save it in memory
-				IF bus_c2c = '1' THEN
-					state_nx_i <= FORCED_STORE;         -- BUS_WAIT -> FORCED_STORE
-				END IF;
-			
-			ELSIF state_i = FORCED_STORE THEN
+				
+			ELSIF state_i = MEM_PUT THEN
 				IF mem_done = '1' THEN
-					state_nx_i <= READY;                -- FORCED_STORE -> READY
+					state_nx_i <= READY;
 				END IF;
 			
-			ELSIF state_i = EVICT_WAIT THEN
-				IF cache0_done_inv = '1' AND cache1_done_inv = '1' THEN
-					state_nx_i <= READY;                -- EVICT_WAIT -> READY
-				ELSIF cache0_done_inv = '1' THEN
-					state_nx_i <= EVICT_WAIT1;          -- EVICT_WAIT -> EVICT_WAIT1
-				ELSIF cache1_done_inv = '1' THEN
-					state_nx_i <= EVICT_WAIT0;          -- EVICT_WAIT -> EVICT_WAIT0
-				END IF;
-			
-			ELSIF state_i = EVICT_WAIT0 THEN
-				IF cache0_done_inv = '1' THEN
-					state_nx_i <= READY;                -- EVICT_WAIT0 -> READY
-				END IF;
-			
-			ELSIF state_i = EVICT_WAIT1 THEN
-				IF cache1_done_inv = '1' THEN
-					state_nx_i <= READY;                -- EVICT_WAIT1 -> READY
-				END IF;
+			ELSIF state_i = INVALIDATE THEN
+				state_nx_i <= READY;
 			END IF;
 		END IF;
 	END PROCESS next_state_process;
@@ -338,7 +324,6 @@ ARCHITECTURE cache_last_level_behavior OF cache_last_level IS
 		
 		ELSIF falling_edge(clk) AND reset = '0' THEN
 			IF state_i = READY THEN
-				-- READY -> READY
 				IF state_nx_i = READY THEN
 					IF (bus_cmd = CMD_PUT) THEN
 						avail_fields(hit_line_num_i) <= '1';
@@ -356,30 +341,23 @@ ARCHITECTURE cache_last_level_behavior OF cache_last_level IS
 							bus_data      <= data_fields(hit_line_num_i);
 							bus_done      <= '1';
 							can_clear_bus := FALSE;
-						ELSIF (hit_i = '1' AND bus_c2c = '1') THEN
+						ELSIF (hit_i = '1') THEN
 							IF (bus_cmd = CMD_GETWR) THEN
 								-- Do nothing, the block will still be modified in the requesting L1
 							ELSIF (bus_cmd = CMD_GETRD) THEN
 								data_fields(hit_line_num_i)  <= bus_data;
 								avail_fields(hit_line_num_i) <= '1';
 							END IF;
-							can_clear_bus := FALSE;
 						END IF;
 						LRU_execute(lru_fields, hit_line_num_i);
-					ELSIF (bus_cmd = CMD_INV_M) THEN
-						-- An L1 is going from S to M, invalidate the block
-						-- The other L1 will answer with a mem_done, so no need to do anything else
-						avail_fields(hit_line_num_i) <= '0';
 					END IF;
-				-- READY -> MEM_REQ
+				
 				ELSIF state_nx_i = MEM_REQ THEN
 					IF (hit_i = '0' AND repl_i = '1' AND is_not_instruction_line(repl_addr_i) = '1') THEN
 						IF (repl_avail_i = '1') THEN
-							-- Save current state, must fake a request
 							priority_req_S <= '1';
 							tmp_address    <= repl_addr_i;
 						ELSE
-							-- Save current state, must fake a request
 							priority_req_M <= '1';
 							tmp_address    <= repl_addr_i;
 						END IF;
@@ -387,13 +365,17 @@ ARCHITECTURE cache_last_level_behavior OF cache_last_level IS
 					mem_cmd  <= CMD_GETRD; -- Doesn't matter the intention, LLC-Mem connection
 					mem_addr <= bus_addr;
 					can_clear_mem := FALSE;
-				-- READY -> ARB_LLC_REQ
-				ELSIF state_nx_i = ARB_LLC_REQ THEN
-					arb_req <= '1';
+				
+				ELSIF state_nx_i = EVICT_DIR THEN
+					dir_evict <= '1';
+					dir_addr  <= tmp_address;
+				
+				ELSIF state_nx_i = INVALIDATE THEN
+					avail_fields(dir_inv_line_num_i) <= '0';
+					dir_inv_ack                      <= '1';
 				END IF;
 			
 			ELSIF state_i = MEM_REQ THEN
-				-- MEM_REQ -> READY
 				IF state_nx_i = READY THEN
 					tag_fields(lru_line_num_i)   <= bus_addr(31 DOWNTO 4);
 					valid_fields(lru_line_num_i) <= '1';
@@ -412,75 +394,34 @@ ARCHITECTURE cache_last_level_behavior OF cache_last_level IS
 					can_clear_mem := FALSE;
 				END IF;
 			
-			ELSIF state_i = ARB_LLC_REQ THEN
-				-- ARB_LLC_REQ -> BUS_WAIT
-				IF state_nx_i = BUS_WAIT THEN
-					bus_cmd  <= CMD_GETWR; -- Must force an eviction, thus we don't want the cache to have the block, simulate a GET with intention to write 
-					bus_addr <= tmp_address;
-					can_clear_bus := FALSE;
-				-- ARB_LLC_REQ -> EVICT_WAIT
-				ELSIF state_nx_i = EVICT_WAIT THEN
-					bus_cmd  <= CMD_INV_S; -- Must force the caches to invalidate the block
-					bus_addr <= tmp_address;
-					can_clear_bus := FALSE;
-				END IF;
-			
-			ELSIF state_i = BUS_WAIT THEN
-				-- BUS_WAIT -> FORCED_STORE
-				IF state_nx_i = FORCED_STORE THEN
+			ELSIF state_i = EVICT_DIR THEN
+				IF state_nx_i = READY THEN
+					priority_req_S <= '0';
+					dir_evict      <= '0';
+				ELSIF state_nx_i = MEM_PUT THEN
+					priority_req_M <= '0';
+					dir_evict      <= '0';
 					mem_cmd        <= CMD_PUT;
 					mem_addr       <= tmp_address;
 					mem_data       <= bus_data;
-					bus_done       <= '1';
-					priority_req_M <= '0';
-					can_clear_bus  := FALSE;
 					can_clear_mem  := FALSE;
-				ELSE
-					can_clear_bus := FALSE;
 				END IF;
-				
-			ELSIF state_i = FORCED_STORE THEN
-				-- FORCED_STORE -> READY
+			
+			ELSIF state_i = MEM_PUT THEN
 				IF state_nx_i = READY THEN
-					arb_req <= '0';
+					-- Do nothing
 				ELSE
-					can_clear_bus := FALSE;
 					can_clear_mem := FALSE;
 				END IF;
 			
-			ELSIF state_i = EVICT_WAIT THEN
-				priority_req_S <= '0';
-				can_clear_bus := FALSE;
-				IF state_nx_i = EVICT_WAIT0 THEN
-					-- Do nothing, still need to wait for Cache0's eviction
-				ELSIF state_nx_i = EVICT_WAIT1 THEN
-					-- Do nothing, still need to wait for Cache1's eviction
-				ELSIF state_nx_i = READY THEN
-					-- Now none of the caches has the block
-					arb_req  <= '0';
-					bus_done <= '1';
-				ELSE
-					can_clear_bus := FALSE;
-				END IF;
+			ELSIF state_i = INVALIDATE THEN
+				dir_inv_ack <= '0';
+			END IF;
 			
-			ELSIF state_i = EVICT_WAIT0 THEN
-				can_clear_bus := FALSE;
-				IF state_nx_i = READY THEN
-					-- Now none of the caches has the block
-					arb_req  <= '0';
-					bus_done <= '1';
-				ELSE
-					can_clear_bus := FALSE;
-				END IF;
-			
-			ELSIF state_i = EVICT_WAIT1 THEN
-				can_clear_bus := FALSE;
-				IF state_nx_i = READY THEN
-					-- Now none of the caches has the block
-					arb_req  <= '0';
-					bus_done <= '1';
-				ELSE
-					can_clear_bus := FALSE;
+			IF dir_c2c = '1' THEN
+				IF bus_c2c = '1' AND bus_cmd = CMD_GETRD THEN
+					data_fields(hit_line_num_i) <= bus_data;
+					avail_fields(hit_line_num_i) <= '1';
 				END IF;
 			END IF;
 			
@@ -499,6 +440,9 @@ ARCHITECTURE cache_last_level_behavior OF cache_last_level IS
 	
 	-- Determine which line has hit
 	hit_line_num_i <= line_hit(bus_addr, tag_fields, valid_fields);
+	
+	-- Determine which line has hit with the dir_inv_add
+	dir_inv_line_num_i <= line_hit(dir_inv_addr, tag_fields, valid_fields);
 	
 	-- Determine if the hit is in an available block
 	hit_avail_i <= (hit_i AND avail_fields(hit_line_num_i));

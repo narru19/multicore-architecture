@@ -28,7 +28,7 @@ ARCHITECTURE structure OF arbiter IS
 	-- Using old_state to establish some kind of fairness
 	-- Fairness: If you have just worked, you will only work again
 	--           immediately after if other workers don't want to. 
-	--           (This would not run smoothly in an Andalucian processor) 
+	--           (This would not run smoothly in an Andalucian processor)
 	SIGNAL cur_state : cur_state_t := IDLE;
 	SIGNAL old_state : old_state_t := NONE;
 	
